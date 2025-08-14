@@ -32,4 +32,5 @@ function SubNav({ activeCategory, setActiveCategory, categories }) {
     </div>
   );
 }
+
 export default SubNav;

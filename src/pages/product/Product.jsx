@@ -1,9 +1,8 @@
-// src/pages/Products/Products.jsx
 import React, { useEffect, useState, useContext } from 'react';
 import ProductCard from './ProductCard';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
-import SubNav from '../../components/Subnav';
+import SubNav from '../../components/SubNav'; // ✅ Fixed casing
 import Footer from '../../components/Footer';
 import { WishlistContext } from '../../context/WishlistContext';
 import { URL } from '../api';
@@ -18,7 +17,7 @@ export default function Products() {
 
   const { user, setUser, wishlist, setWishlist } = useContext(WishlistContext);
 
-  // ✅ Fetch products and derive categories (no "all" here)
+  // ✅ Fetch products and derive categories
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -28,7 +27,7 @@ export default function Products() {
         setProducts(productList);
         setFilteredProducts(productList);
 
-        // ✅ Extract unique categories only
+        // Extract unique categories only
         const uniqueCategories = [...new Set(productList.map(product => product.category))];
         setCategories(uniqueCategories);
 
