@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { URL } from "../api";
 
 const CategoryCards = () => {
   const [products, setProducts] = useState([]);
@@ -13,7 +14,7 @@ const CategoryCards = () => {
   ];
 
   useEffect(() => {
-    fetch(`http://localhost:3001/products`)
+    fetch(`${URL}/products`)
       .then((res) => res.json())
       .then((data) => {
         setProducts(data);
