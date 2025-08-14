@@ -3,7 +3,7 @@ import ProductCard from './ProductCard';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
 // import SubNav from '../../components/SubNav'; // ✅ Fixed casing
-import SubNav from '../../components/Subnav';
+import SubNav from '../../components/Filter';
 import Footer from '../../components/Footer';
 import { WishlistContext } from '../../context/WishlistContext';
 import { URL } from '../api';
