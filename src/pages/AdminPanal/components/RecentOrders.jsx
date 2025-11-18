@@ -1,6 +1,6 @@
+// src/components/RecentOrders.jsx
 import React from "react";
 import { useAdminRevenue } from "../Context/AdminContext";
-
 
 // helper - get initials from a name
 const getInitials = (name) => {
@@ -11,6 +11,7 @@ const getInitials = (name) => {
 
 // helper - time ago
 const timeAgo = (dateString) => {
+  if (!dateString) return "unknown";
   const diffMs = Date.now() - new Date(dateString).getTime();
   const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
   const diffMin = Math.floor(diffMs / (1000 * 60));
@@ -22,7 +23,7 @@ const timeAgo = (dateString) => {
 
 // helper - status styling
 const getStatusStyle = (status) => {
-  switch (status?.toLowerCase()) {
+  switch ((status || "").toLowerCase()) {
     case "completed":
       return { text: "#5A8F5E", bg: "#E8F5E9" };
     case "processing":
@@ -30,6 +31,7 @@ const getStatusStyle = (status) => {
     case "pending":
       return { text: "#1976D2", bg: "#E3F2FD" };
     case "cancelled":
+    case "canceled":
       return { text: "#D32F2F", bg: "#FFEBEE" };
     default:
       return { text: "#555", bg: "#EEE" };
@@ -38,13 +40,14 @@ const getStatusStyle = (status) => {
 
 export default function RecentOrders({ limit = 5 }) {
   const { orders, loading } = useAdminRevenue();
+console.log(orders);
 
   if (loading) return <div>Loading recent orders...</div>;
-  if (!orders.length) return <div>No orders found.</div>;
+  if (!orders || orders.length === 0) return <div>No orders found.</div>;
 
-  // sort latest first
+  // sort latest first (use createdOn or placed_at)
   const recentOrders = [...orders]
-    .sort((a, b) => new Date(b.placed_at) - new Date(a.placed_at))
+    .sort((a, b) => new Date(b.createdOn ?? b.placed_at) - new Date(a.createdOn ?? a.placed_at))
     .slice(0, limit);
 
   return (
@@ -69,18 +72,18 @@ export default function RecentOrders({ limit = 5 }) {
       {/* Orders list */}
       <div className="divide-y divide-gray-100">
         {recentOrders.map((order) => {
-          const customerName =
-            `${order.shipping?.firstName || ""} ${order.shipping?.lastName || ""}`.trim() ||
-            order.contact?.email ||
-            "Unknown";
+          // build customer name (prefer address fullName, then order.name)
+          const customerName =order.name
 
-          const firstProduct = order.cart?.[0];
+            
+
+          const firstProduct =order.items?.[0] ?? null;
           const productDisplay =
-            order.cart?.length === 1
-              ? firstProduct?.name
-              : `${firstProduct?.name} +${order.cart.length - 1} more`;
+            (order.cart?.length === 1 || order.items?.length === 1)
+              ? firstProduct?.name ?? firstProduct?.productName ?? "Item"
+              : `${firstProduct?.name ?? firstProduct?.productName ?? "Item"} +${(order.cart?.length ?? order.items?.length) - 1} more`;
 
-          const statusStyle = getStatusStyle(order.status);
+          const statusStyle = getStatusStyle(order.status ?? order.orderStatus ?? "");
 
           return (
             <div
@@ -94,6 +97,7 @@ export default function RecentOrders({ limit = 5 }) {
                     {getInitials(customerName)}
                   </span>
                 </div>
+
                 {/* Customer + order info */}
                 <div>
                   <p className="font-light tracking-wider text-gray-900">
@@ -103,14 +107,14 @@ export default function RecentOrders({ limit = 5 }) {
                     {productDisplay}
                   </p>
                   <p className="text-xs text-gray-400 tracking-wider">
-                    #{order.id} • {timeAgo(order.placed_at)}
+                    #{order.id} • {timeAgo(order.createdOn ?? order.placed_at)}
                   </p>
                 </div>
               </div>
 
               <div className="text-right">
                 <p className="font-light tracking-wider text-gray-900">
-                  ₹{order.totalAmount}
+                  ₹{Number(order.totalAmount).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </p>
                 <span
                   className="inline-block px-2 py-1 text-xs font-medium rounded tracking-wider"
@@ -119,7 +123,7 @@ export default function RecentOrders({ limit = 5 }) {
                     backgroundColor: statusStyle.bg,
                   }}
                 >
-                  {order.status?.toUpperCase()}
+                  {(order.status ?? order.orderStatus ?? "UNKNOWN").toString().toUpperCase()}
                 </span>
               </div>
             </div>

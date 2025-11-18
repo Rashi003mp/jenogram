@@ -1,97 +1,72 @@
-import React, { useEffect, useState, useContext } from 'react';
-import { HeartIcon as HeartSolid } from '@heroicons/react/24/solid';
-import { Link } from 'react-router-dom';
-import ProductCard from '../product/ProductCard';
-import axios from 'axios';
-import toast from 'react-hot-toast';
-import { useAuth } from '../../context/AuthContext';
-import { WishlistContext } from '../../context/WishlistContext';
-import { URL } from '../api';
+// src/pages/WishlistPage.jsx
+import React, { useEffect, useState } from "react";
+import { HeartIcon as HeartSolid } from "@heroicons/react/24/solid";
+import { Link } from "react-router-dom";
+import ProductCard from "../product/ProductCard";
+import { useAuth } from "../../context/AuthContext";
+import { useWishlist } from "../../context/WishlistContext";
 
 function WishlistPage() {
-  const [loading, setLoading] = useState(true);
+  const { user, setUser } = useAuth(); // setUser is optional; left here if you need to sync user object
+  const {
+    wishlistItems,
+    loading,
+    fetchWishlist,
+    toggleWishlist,
+    isInWishlist,
+    clearWishlist,
+  } = useWishlist();
+
   const [error, setError] = useState(null);
 
-  // ✅ Shared wishlist & user from context
-  const { user } = useAuth();
-  const { wishlist, setWishlist, setUser } = useContext(WishlistContext);
-
-  // ✅ Update wishlist in backend + context
-  const updateWishlist = async (updatedWishlist) => {
-    try {
-      if (user?.id) {
-        await axios.patch(`${URL}/users/${user.id}`, {
-          wishlist: updatedWishlist
-        });
-        // Also update user in context so Products.jsx sees the change
-        setUser((prev) => ({ ...prev, wishlist: updatedWishlist }));
-      }
-      setWishlist(updatedWishlist); // update shared state
-      return true;
-    } catch (err) {
-      console.error('Failed to update wishlist:', err);
-      toast.error('Failed to update wishlist');
-      return false;
-    }
-  };
-
-  // Load wishlist from backend/localStorage when page opens
+  // ensure wishlist is loaded for current user
   useEffect(() => {
-    const fetchUserData = async () => {
+    const load = async () => {
       try {
-        setLoading(true);
         if (user?.id) {
-          const response = await axios.get(`${URL}/users/${user.id}`);
-          const userWishlist = response.data.wishlist || [];
-          setWishlist(userWishlist); // ✅ from context
+          await fetchWishlist();
         }
       } catch (err) {
-        setError(err.message);
-        console.error('Failed to fetch wishlist:', err);
-      } finally {
-        setLoading(false);
+        console.error("Failed to fetch wishlist:", err);
+        setError(err?.message ?? "Failed to load wishlist");
       }
     };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
-    fetchUserData();
-  }, [user, setWishlist]);
-
-  // Toggle wishlist item
   const handleWishlistToggle = async (product) => {
-    const isInWishlist = wishlist.some(item => item.id === product.id);
-    const updatedWishlist = isInWishlist
-      ? wishlist.filter(item => item.id !== product.id)
-      : [...wishlist, product];
+    if (!user) {
+      toast('Please login to manage your wishlist', {
+        icon: '🔒',
+        style: { background: '#ffebee', color: '#d32f2f' },
+      });
+      return;
+    }
 
-    const success = await updateWishlist(updatedWishlist);
-    if (success) {
-      toast.success(
-        isInWishlist ? 'Removed from wishlist' : 'Added to wishlist!',
-        { position: 'top-center', duration: 2000 }
-      );
+    try {
+      await toggleWishlist(product.productId); // context handles optimistic updates + API
+      // toggleWishlist already shows success/warning/failure toasts in your context
+    } catch (err) {
+      // Just in case context throws — show fallback error
+      console.error('Wishlist toggle failed in Products component:', err);
+      toast.error('Failed to update wishlist');
     }
   };
 
-  // Clear entire wishlist
-  const handleClearAll = async () => {
-    const confirmClear = window.confirm('Are you sure you want to clear your entire wishlist?');
-    if (!confirmClear) return;
 
-    try {
-      if (user?.id) {
-        await axios.patch(`${URL}/users/${user.id}`, { wishlist: [] });
-        setUser((prev) => ({ ...prev, wishlist: [] }));
-      }
-      setWishlist([]); // ✅ updates everywhere
-      toast.success('Wishlist cleared successfully', { position: 'top-center', duration: 2000 });
-    } catch (err) {
-      console.error('Failed to clear wishlist:', err);
-      toast.error('Failed to clear wishlist');
-    }
+  const handleClearAll = async () => {
+    const confirmClear = window.confirm(
+      "Are you sure you want to clear your entire wishlist?"
+    );
+    if (!confirmClear) return;
+    await clearWishlist();
   };
 
   if (loading) {
-    return <div className="container mx-auto px-4 py-8 text-center">Loading...</div>;
+    return (
+      <div className="container mx-auto px-4 py-8 text-center">Loading...</div>
+    );
   }
 
   if (error) {
@@ -99,7 +74,10 @@ function WishlistPage() {
       <div className="container mx-auto px-4 py-8 text-center">
         <p className="text-red-500 mb-4">Error loading wishlist: {error}</p>
         <button
-          onClick={() => window.location.reload()}
+          onClick={() => {
+            setError(null);
+            fetchWishlist();
+          }}
           className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
         >
           Try Again
@@ -108,9 +86,13 @@ function WishlistPage() {
     );
   }
 
+  const list = Array.isArray(wishlistItems) ? wishlistItems : [];
+  console.log(wishlistItems);
+
+
   return (
     <div className="container mx-auto px-4 py-8">
-      {wishlist.length === 0 ? (
+      {list.length === 0 ? (
         <div className="text-center py-16 max-w-md mx-auto">
           <HeartSolid className="w-16 h-16 mx-auto text-gray-400 mb-6" />
           <h2 className="text-2xl font-light text-gray-800 mb-3 tracking-wide">
@@ -121,17 +103,15 @@ function WishlistPage() {
           </p>
           <Link
             to="/products"
-            className="inline-block px-8 py-3 bg-black text-white 
-                       border border-black hover:bg-white hover:text-black 
-                       transition-all duration-300 uppercase text-xs 
-                       tracking-widest font-medium focus:outline-none"
+            className="inline-block px-8 py-3 bg-black text-white border border-black hover:bg-white hover:text-black transition-all duration-300 uppercase text-xs tracking-widest font-medium focus:outline-none"
           >
             DISCOVER OUR COLLECTION
           </Link>
         </div>
       ) : (
         <>
-          <div className="flex justify-end mb-4">
+          <div className="flex justify-between items-center mb-4">
+            <div />
             <button
               onClick={handleClearAll}
               className="text-sm text-red-500 hover:text-red-700"
@@ -139,15 +119,19 @@ function WishlistPage() {
               Clear All
             </button>
           </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-            {wishlist.map(product => (
-              <ProductCard
-                key={product.id}
-                product={product}
-                isInWishlist={true}
-                onWishlistToggle={handleWishlistToggle}
-              />
-            ))}
+            {list.map((item) => {
+              return (
+                <ProductCard
+                  key={item.id}
+                  product={item}
+                  onWishlistToggle={() => toggleWishlist(item.id)}
+                  isInWishlist={isInWishlist(item.id)}
+                />
+
+              );
+            })}
           </div>
         </>
       )}

@@ -1,37 +1,48 @@
-import React, { useEffect, useState, useContext } from 'react';
+// src/pages/Products.jsx
+import React, { useEffect, useState } from 'react';
 import ProductCard from './ProductCard';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
-// import SubNav from '../../components/SubNav'; // ✅ Fixed casing
 import SubNav from '../../components/Filter';
 import Footer from '../../components/Footer';
-import { WishlistContext } from '../../context/WishlistContext';
+import { useWishlist } from '../../context/WishlistContext';
+import { useAuth } from '../../context/AuthContext';
 import { URL } from '../api';
 
 export default function Products() {
   const [products, setProducts] = useState([]);
-  const [categories, setCategories] = useState([]);
+  const [categories, setCategories] = useState([]); // ['Men', 'Jeans', 'Accessories', ...]
   const [filteredProducts, setFilteredProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [activeCategory, setActiveCategory] = useState('all'); // 'all' or categoryName string
 
-  const { user, setUser, wishlist, setWishlist } = useContext(WishlistContext);
+  const { wishlistItems, toggleWishlist, isInWishlist, fetchWishlist } = useWishlist();
+  const { user } = useAuth();
 
-  // ✅ Fetch products and derive categories
+  // Fetch products and derive categories
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const productsRes = await axios.get(`${URL}/products`);
-        const productList = productsRes.data;
+        const productsRes = await axios.get(
+          `${URL}/Product/filter?page=1&pageSize=20&descending=false`
+        );
+
+        const productList = productsRes?.data?.data || [];
+        console.log('Products:', productList);
 
         setProducts(productList);
         setFilteredProducts(productList);
 
-        // Extract unique categories only
-        const uniqueCategories = [...new Set(productList.map(product => product.category))];
-        setCategories(uniqueCategories);
-
+        // 🔹 Use categoryName from API, not product.category
+        const uniqueCategories = [
+          ...new Set(
+            productList
+              .map((p) => p.categoryName) // <- ⬅️ from your backend
+              .filter(Boolean) // remove null/undefined
+          ),
+        ];
+        setCategories(uniqueCategories); // e.g. ['Men', 'Jeans', 'Accessories']
       } catch (err) {
         console.error('Failed to fetch products:', err);
         setError('Failed to load products. Please try again later.');
@@ -44,42 +55,39 @@ export default function Products() {
     fetchData();
   }, []);
 
-  // ✅ Filter products when category changes
+  // Optionally refresh wishlist when products/user changes (if you want fresh data)
+  useEffect(() => {
+    if (user?.id) {
+      fetchWishlist();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // 🔧 Filter products when category changes (using categoryName)
   useEffect(() => {
     if (activeCategory === 'all') {
       setFilteredProducts(products);
     } else {
-      setFilteredProducts(products.filter(product => product.category === activeCategory));
+      setFilteredProducts(
+        products.filter((product) => product.categoryName === activeCategory)
+      );
     }
   }, [activeCategory, products]);
 
-  // ✅ Wishlist toggle
+  // Wishlist toggle — delegates to context's toggleWishlist
   const handleWishlistToggle = async (product) => {
     if (!user) {
       toast('Please login to manage your wishlist', {
         icon: '🔒',
-        style: { background: '#ffebee', color: '#d32f2f' }
+        style: { background: '#ffebee', color: '#d32f2f' },
       });
       return;
     }
 
-    const isInWishlist = wishlist.some(item => item.id === product.id);
-    const updatedWishlist = isInWishlist
-      ? wishlist.filter(item => item.id !== product.id)
-      : [...wishlist, product];
-
     try {
-      await axios.patch(`${URL}/users/${user.id}`, {
-        wishlist: updatedWishlist
-      });
-
-      const updatedUser = { ...user, wishlist: updatedWishlist };
-      setUser(updatedUser);
-      setWishlist(updatedWishlist);
-
-      toast.success(isInWishlist ? 'Removed from wishlist' : 'Added to wishlist!');
-    } catch (error) {
-      console.error("Failed to update wishlist:", error);
+      await toggleWishlist(product.id); // productId is not in sample, so use id
+    } catch (err) {
+      console.error('Wishlist toggle failed in Products component:', err);
       toast.error('Failed to update wishlist');
     }
   };
@@ -104,10 +112,11 @@ export default function Products() {
 
   return (
     <>
+      {/* 🔹 Pass category names to SubNav */}
       <SubNav
         activeCategory={activeCategory}
         setActiveCategory={setActiveCategory}
-        categories={categories} // ✅ no "all" here
+        categories={categories} // ['Men', 'Jeans', 'Accessories']
       />
 
       <div className="max-w-7xl mx-auto px-4 py-12">
@@ -121,12 +130,12 @@ export default function Products() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {filteredProducts.map(product => (
+            {filteredProducts.map((product) => (
               <ProductCard
                 key={product.id}
                 product={product}
-                onWishlistToggle={handleWishlistToggle}
-                isInWishlist={wishlist.some(item => item.id === product.id)}
+                onWishlistToggle={() => handleWishlistToggle(product)}
+                isInWishlist={isInWishlist(product.id)}
               />
             ))}
           </div>

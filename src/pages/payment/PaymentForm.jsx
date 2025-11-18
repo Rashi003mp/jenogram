@@ -1,369 +1,541 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { URL } from '../api';
-import { ChevronLeft } from 'lucide-react';
+// src/pages/Payment.jsx
+import React, { useEffect, useState } from "react";
+import axios from "axios";
+import { useNavigate, useLocation } from "react-router-dom";
+import { toast } from "react-toastify";
+import { URL } from "../api";
+import { useAuth } from "../../context/AuthContext";
+import { useCart } from "../../context/CartContext";
+import { CartService } from "../../Services/cartservice";
 
-const PaymentForm = ({ currentUser, cart, clearCart }) => {
+const PAYMENT_ENUM = { cod: 0, razorpay: 1 };
+
+const loadRazorpayScript = () =>
+  new Promise((resolve, reject) => {
+    if (window.Razorpay) return resolve(true);
+    const s = document.createElement("script");
+    s.src = "https://checkout.razorpay.com/v1/checkout.js";
+    s.async = true;
+    s.onload = () => resolve(true);
+    s.onerror = () => reject(new Error("Razorpay SDK failed to load"));
+    document.body.appendChild(s);
+  });
+
+function Payment() {
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const [shippingAddress, setShippingAddress] = useState(() => {
-    const lastOrder = currentUser.orders?.[currentUser.orders.length - 1];
-    return lastOrder?.shipping || {
-      country: 'India',
-      firstName: currentUser.name.split(' ')[0] || '',
-      lastName: currentUser.name.split(' ')[1] || '',
-      address: '',
-      city: '',
-      state: '',
-      pincode: '',
-      phone: '',
-    };
+  const { token: ctxToken, user: authUserFromCtx, setCartLength } = useAuth() ?? {};
+  const cartContext = useCart?.() ?? null;
+  const cartItemsFromContext = cartContext?.items ?? null;
+  const contextClearCart = cartContext?.clearCart ?? null;
+
+  const buyNow = location.state?.buyNow ?? null;
+
+  const [user, setUser] = useState(authUserFromCtx || null);
+  const [loadingUser, setLoadingUser] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [cart, setCart] = useState([]);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("razorpay");
+  const [billingAddress, setBillingAddress] = useState({
+    street: "",
+    city: "",
+    state: "",
+    zip: "",
+    phoneNumber: "",
+    country: "India",
   });
 
-  const [sameAsShipping, setSameAsShipping] = useState(true);
-  const [billingAddress, setBillingAddress] = useState({ ...shippingAddress });
+  const getAuthTokenOrNotify = () => {
+    const t = ctxToken ?? user?.token ?? null;
+    console.log("getAuthTokenOrNotify token:", t);
+    if (!t) {
+      toast.error("Session expired or not logged in. Please login.");
+      return null;
+    }
+    return t;
+  };
 
-  const [paymentMethod, setPaymentMethod] = useState('cod');
-  const [cardDetails, setCardDetails] = useState({
-    cardNumber: '',
-    expiry: '',
-    cvv: '',
-    nameOnCard: '',
-  });
-
-  const [errors, setErrors] = useState({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
-
-  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const shippingCost = 100;
-  const tax = Math.round(subtotal * 0.05);
-  const total = subtotal + shippingCost + tax;
+  const fetchUserData = async () => {
+    const id = authUserFromCtx?.id ?? user?.id;
+    if (!id) return;
+    setLoadingUser(true);
+    try {
+      const res = await fetch(`${URL}/user/${id}`);
+      if (!res.ok) {
+        console.warn("fetchUserData non-ok:", res.status);
+        return;
+      }
+      const fresh = await res.json();
+      setUser(fresh);
+      if (fresh?.shippingAddress) setBillingAddress(prev => ({ ...prev, ...fresh.shippingAddress }));
+    } catch (err) {
+      console.error("fetchUserData error", err);
+    } finally {
+      setLoadingUser(false);
+    }
+  };
 
   useEffect(() => {
-    if (sameAsShipping) setBillingAddress(shippingAddress);
-  }, [shippingAddress, sameAsShipping]);
+    if (authUserFromCtx && (!user || authUserFromCtx.id !== user.id)) setUser(authUserFromCtx);
+    fetchUserData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUserFromCtx?.id, ctxToken]);
 
-  const validateForm = () => {
-    const newErrors = {};
+  useEffect(() => {
+    const loadCart = async () => {
+      if (buyNow) {
+        setCart([{
+          productId: buyNow.productId,
+          name: buyNow.name ?? buyNow.productName ?? "Product",
+          price: buyNow.price,
+          quantity: buyNow.quantity ?? 1,
+          imageUrl: buyNow.imageUrl,
+        }]);
+        return;
+      }
 
-    ['firstName', 'lastName', 'address', 'city', 'state', 'pincode', 'phone'].forEach((field) => {
-      if (!shippingAddress[field]?.trim()) newErrors[`shipping_${field}`] = 'Required';
-    });
+      if (Array.isArray(cartItemsFromContext) && cartItemsFromContext.length > 0) {
+        setCart(cartItemsFromContext);
+        return;
+      }
 
-    if (!sameAsShipping) {
-      ['firstName', 'lastName', 'address', 'city', 'state', 'pincode', 'phone'].forEach((field) => {
-        if (!billingAddress[field]?.trim()) newErrors[`billing_${field}`] = 'Required';
-      });
-    }
+      const t = ctxToken ?? user?.token ?? null;
+      if (t) {
+        try {
+          const cartItems = await CartService.getCart(t);
+          if (Array.isArray(cartItems) && cartItems.length > 0) {
+            setCart(cartItems);
+            return;
+          }
+        } catch (err) {
+          console.warn("CartService.getCart failed:", err);
+        }
+      }
 
-
-    if (paymentMethod === 'card') {
-      if (!/^\d{16}$/.test(cardDetails.cardNumber.replace(/\s+/g, ''))) newErrors.cardNumber = 'Invalid card number';
-      if (!/^\d{2}\/\d{2}$/.test(cardDetails.expiry)) newErrors.expiry = 'Invalid expiry date (MM/YY)';
-      if (!/^\d{3,4}$/.test(cardDetails.cvv)) newErrors.cvv = 'Invalid CVV';
-      if (!cardDetails.nameOnCard.trim()) newErrors.nameOnCard = 'Required';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleShippingChange = (e) => {
-    const { name, value } = e.target;
-    setShippingAddress((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleBillingChange = (e) => {
-    const { name, value } = e.target;
-    setBillingAddress((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleCardChange = (e) => {
-    const { name, value } = e.target;
-    setCardDetails((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSubmitError('');
-    if (!validateForm()) return;
-
-    setIsSubmitting(true);
-
-    const orderData = {
-      id: `order_${Date.now()}`,
-      userId: currentUser.id,
-      contact: {
-        email: currentUser.email,
-        news: true,
-      },
-      shipping: shippingAddress,
-      billing: sameAsShipping ? { sameAsShipping: true } : billingAddress,
-      cart: cart.map(item => ({
-        id: item.id,
-        name: item.name,
-        description: item.description,
-        price: item.price,
-        count: item.count,
-        category: item.category,
-        images: item.images,
-        isActive: item.isActive,
-        created_at: item.created_at,
-        quantity: item.quantity,
-      })),
-      paymentMethod,
-      totalAmount: total,
-      status: paymentMethod === 'cod' ? 'pending' : 'paid',
-      placed_at: new Date().toISOString(),
+      if (user?.cart && Array.isArray(user.cart)) {
+        setCart(user.cart);
+      } else {
+        setCart([]);
+      }
     };
 
+    loadCart();
+  }, [buyNow, cartItemsFromContext, user, ctxToken]);
+
+  const clearCart = async () => {
+    // try context clear first (if available)
+    if (typeof contextClearCart === "function") {
+      try {
+        await contextClearCart();
+        setCart([]);
+        await fetchUserData();
+        if (typeof setCartLength === "function") setCartLength(0);
+        return;
+      } catch (e) {
+        console.warn("contextClearCart failed", e);
+      }
+    }
+
+    // fallback: patch user cart to empty
+    if (!user && !authUserFromCtx) return;
+    const userId = user?.id ?? authUserFromCtx?.id;
+
     try {
-      const updatedOrders = [...(currentUser.orders || []), orderData];
-
-      const userResponse = await fetch(`${URL}/users/${currentUser.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orders: updatedOrders,
-          cart: [],
-        }),
+      const res = await fetch(`${URL}/user/${userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cart: [] }),
       });
+      if (!res.ok) throw new Error("Failed to clear cart");
+      setCart([]);
+      await fetchUserData();
+      if (typeof setCartLength === "function") setCartLength(0);
+      return;
+    } catch (err) {
+      console.warn("patch user cart failed", err);
+    }
 
-      if (!userResponse.ok) throw new Error('Failed to update user');
-
-      await Promise.all(
-        cart.map(item => {
-          const newCount = item.count - item.quantity;
-          return fetch(`${URL}/products/${item.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ count: newCount }),
-          });
-        })
-      );
-
-      await clearCart();
-
-      navigate('/order-confirmation', { state: { orderId: orderData.id } });
-    } catch (error) {
-      console.error(error);
-      setSubmitError('Failed to place order. Please try again.');
-    } finally {
-      setIsSubmitting(false);
+    try {
+      const t = ctxToken ?? user?.token ?? null;
+      if (t) {
+        await CartService.clearCart(t);
+        setCart([]);
+        if (typeof setCartLength === "function") setCartLength(0);
+      }
+    } catch (err) {
+      console.warn("CartService.clearCart failed", err);
     }
   };
 
+  const cartTotal = cart.reduce((sum, item) => sum + (Number(item.price) || 0) * (Number(item.quantity) || 1), 0);
+
+  const handlePayment = async () => {
+    if (!authUserFromCtx && !user) {
+      toast.error("Please login to proceed");
+      return;
+    }
+    if (!cart.length) {
+      toast.error("Your cart is empty");
+      return;
+    }
+    if (!billingAddress.street || !billingAddress.city || !billingAddress.state || !billingAddress.zip) {
+      toast.error("Please complete your billing address");
+      return;
+    }
+
+    const t = getAuthTokenOrNotify();
+    if (!t) return;
+
+    setIsProcessing(true);
+    const headers = { Authorization: `Bearer ${t}`, "Content-Type": "application/json" };
+
+    try {
+      const paymentMethodEnum = PAYMENT_ENUM[selectedPaymentMethod];
+      if (paymentMethodEnum === undefined) throw new Error("Invalid payment method selected.");
+
+      const basePayload = {
+        addressId: 0,
+        newAddress: {
+          id: 0,
+          fullName: (user?.name ?? authUserFromCtx?.name ?? "Customer"),
+          phoneNumber: billingAddress.phoneNumber || user?.phone || authUserFromCtx?.phone || "",
+          addressLine1: billingAddress.street,
+          addressLine2: "",
+          city: billingAddress.city,
+          state: billingAddress.state,
+          country: billingAddress.country ?? "India",
+          postalCode: billingAddress.zip,
+          isDefault: false,
+        },
+        paymentMethod: paymentMethodEnum,
+        items: cart.map(it => ({ productId: it.productId, quantity: it.quantity, price: it.price })),
+      };
+
+      // ---------- Razorpay path ----------
+      if (selectedPaymentMethod === "razorpay") {
+        console.log("Creating order on backend (razorpay):", basePayload);
+        const createRes = await axios.post(`${URL}/Order/create`, basePayload, { headers, validateStatus: () => true });
+        console.log("Order.create response:", createRes.status, createRes.data);
+
+        if (createRes.status === 401 || createRes.status === 403) {
+          toast.error("Authentication failed. Please login again.");
+          setIsProcessing(false);
+          return;
+        }
+        if (!(createRes.status >= 200 && createRes.status < 300)) {
+          const msg = createRes.data?.message ?? `Create order failed: ${createRes.status}`;
+          toast.error(msg);
+          setIsProcessing(false);
+          return;
+        }
+
+        const backend = createRes.data?.data ?? createRes.data;
+        const key = backend?.key;
+        const razorpayOrderId = backend?.razorpayOrderId ?? backend?.orderId ?? backend?.razorpay_order_id;
+        const localOrderId = backend?.localOrderId ?? backend?.orderIdLocal ?? backend?.localOrderId;
+
+        if (!key || !razorpayOrderId) {
+          console.error("Missing key/orderId from backend", backend);
+          toast.error("Payment setup failed. Try again.");
+          setIsProcessing(false);
+          return;
+        }
+
+        // load SDK
+        try {
+          await loadRazorpayScript();
+        } catch (e) {
+          console.error("Razorpay SDK load failed", e);
+          toast.error("Payment SDK failed to load. Refresh and try again.");
+          setIsProcessing(false);
+          return;
+        }
+
+        const options = {
+          key,
+          amount: Math.round(cartTotal * 100),
+          currency: backend.currency ?? "INR",
+          order_id: razorpayOrderId,
+          name: backend?.name ?? "ShoeCart",
+          description: backend?.description ?? "Order Payment",
+          prefill: { name: (user?.name ?? authUserFromCtx?.name) || "", email: (user?.email ?? authUserFromCtx?.email) || "" },
+          theme: { color: "#F75555" },
+
+          handler: async (razorpayResp) => {
+            try {
+              console.log("Razorpay handler response:", razorpayResp);
+              // Verify at backend first
+              const verifyRes = await axios.post(
+                `${URL}/Order/razorpay/verify`,
+                {
+                  localOrderId: localOrderId ?? backend?.localOrderId ?? null,
+                  razorpayOrderId: razorpayResp.razorpay_order_id,
+                  razorpayPaymentId: razorpayResp.razorpay_payment_id,
+                  razorpaySignature: razorpayResp.razorpay_signature,
+                },
+                { headers, validateStatus: () => true }
+              );
+
+              console.log("Verify response:", verifyRes.status, verifyRes.data);
+
+              if (verifyRes.status === 401 || verifyRes.status === 403) {
+                toast.error("Verification failed due to authentication. Please login again.");
+                setIsProcessing(false);
+                return;
+              }
+              if (!(verifyRes.status >= 200 && verifyRes.status < 300)) {
+                const msg = verifyRes.data?.message ?? `Verify failed: ${verifyRes.status}`;
+                console.error("Verify failed:", verifyRes.data);
+                toast.error(msg);
+                setIsProcessing(false);
+                return;
+              }
+
+              // verification success => now clear cart and navigate
+              try {
+                await clearCart();
+              } catch (e) {
+                console.warn("clearCart after verify failed (non-fatal)", e);
+              }
+              if (typeof setCartLength === "function") {
+                try { setCartLength(0); } catch (e) { console.warn("setCartLength failed", e); }
+              }
+
+              toast.success("Payment verified and order placed 🎉");
+              setIsProcessing(false);
+              navigate("/order-list");
+            } catch (verifyErr) {
+              console.error("Payment verification error:", verifyErr);
+              toast.error("Payment verification failed. Contact support.");
+              setIsProcessing(false);
+            }
+          },
+
+          modal: {
+            ondismiss: () => {
+              // user closed checkout window before completing payment
+              console.info("Razorpay modal dismissed");
+              setIsProcessing(false);
+              toast.info("Payment cancelled");
+            },
+          },
+        };
+
+        // open checkout
+        try {
+          const rzp = new window.Razorpay(options);
+          rzp.open();
+          // handle failed payment event (user attempted payment but it failed)
+          rzp.on("payment.failed", (err) => {
+            console.error("Razorpay payment.failed:", err);
+            // don't clear cart here
+            toast.error("Payment failed ❌");
+            setIsProcessing(false);
+          });
+        } catch (err) {
+          console.error("Error opening Razorpay:", err);
+          toast.error("Unable to open payment window. Try again.");
+          setIsProcessing(false);
+        }
+      }
+      // ---------- COD path ----------
+      else {
+        const createRes = await axios.post(`${URL}/Order/create`, basePayload, { headers, validateStatus: () => true });
+        console.log("COD create response:", createRes.status, createRes.data);
+
+        if (createRes.status === 401 || createRes.status === 403) {
+          toast.error("Authentication failed. Please login again.");
+          setIsProcessing(false);
+          return;
+        }
+        if (!(createRes.status >= 200 && createRes.status < 300)) {
+          const msg = createRes.data?.message ?? `Failed to place order: ${createRes.status}`;
+          toast.error(msg);
+          setIsProcessing(false);
+          return;
+        }
+
+        const created = createRes.data?.data ?? createRes.data;
+        const orderId = created?.id ?? created?.orderId ?? null;
+
+        // clear cart immediately for COD (we keep existing behavior)
+        try {
+          await clearCart();
+        } catch (e) {
+          console.warn("clearCart after COD failed (non-fatal)", e);
+        }
+
+        if (typeof setCartLength === "function") {
+          try { setCartLength(0); } catch (e) { console.warn("setCartLength failed", e); }
+        }
+
+        toast.success("Order placed successfully ✅");
+        setIsProcessing(false);
+        // navigate to orders page or confirmation - you used order-list earlier
+        if (orderId) navigate("/order-confirmation", { state: { orderId } });
+        else navigate("/order-list", { replace: true });
+        return;
+      }
+    } catch (err) {
+      console.error("Payment error (outer):", err);
+      const status = err?.response?.status;
+      if (status === 401 || status === 403) {
+        toast.error("Authentication failed. Please login again.");
+      } else {
+        toast.error(err?.message || "Payment failed. Try again!");
+      }
+      setIsProcessing(false);
+    }
+  };
+
+  const paymentButtonType = "button";
+
+  if (!authUserFromCtx && !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="text-2xl font-semibold text-gray-700 mb-4">Please login to proceed</div>
+          <button onClick={() => navigate("/login")} className="bg-red-600 text-white px-6 py-2 rounded-lg hover:bg-red-700 transition-colors">
+            Go to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (loadingUser) return <div>Loading user data...</div>;
+
+  // billing input fields - use keys that match billingAddress object
+  const billingFields = [
+    { key: "street", label: "Street" },
+    { key: "city", label: "City" },
+    { key: "state", label: "State" },
+    { key: "zip", label: "ZIP Code" },
+    { key: "phoneNumber", label: "Phone Number" },
+  ];
+
   return (
-    <div className="max-w-4xl mx-auto p-6">
- <button
-      onClick={() => navigate(-1)}
-      className="flex items-center gap-2 px-4 py-2 border border-black rounded-full
-                 text-sm font-medium tracking-wide hover:bg-black hover:text-white 
-                 transition-all duration-300"
-      style={{
-        fontFamily: "'Didot', serif", 
-        letterSpacing: "0.05em",
-      }}
-    >
-      <ChevronLeft size={18} />
-      BACK
-    </button>
-      <h2 className="text-2xl font-bold mb-6">Complete Your Purchase</h2>
-      <div className="grid md:grid-cols-3 gap-8">
-        <div className="md:col-span-1 bg-gray-50 p-6 rounded-lg">
-          <h3 className="font-medium text-lg mb-4">Order Summary</h3>
-          {cart.map((item) => (
-            <div key={item.id} className="flex justify-between py-2 border-b">
-              <div>
-                <p>{item.name}</p>
-                <p className="text-sm text-gray-600">Qty: {item.quantity}</p>
-              </div>
-              <p>₹{(item.price * item.quantity).toLocaleString()}</p>
-            </div>
-          ))}
-          <div className="mt-4 space-y-2">
-            <div className="flex justify-between"><span>Subtotal</span><span>₹{subtotal.toLocaleString()}</span></div>
-            <div className="flex justify-between"><span>Shipping</span><span>₹{shippingCost.toLocaleString()}</span></div>
-            <div className="flex justify-between"><span>Tax (5%)</span><span>₹{tax.toLocaleString()}</span></div>
-            <div className="flex justify-between font-bold mt-4 pt-2 border-t"><span>Total</span><span>₹{total.toLocaleString()}</span></div>
-          </div>
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-8 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-7xl mx-auto">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Secure Payment</h1>
+          <p className="text-gray-600">Complete your purchase with confidence</p>
         </div>
 
-        <div className="md:col-span-2">
-          <form onSubmit={handleSubmit} noValidate>
-            <fieldset className="mb-8">
-              <legend className="font-medium text-lg mb-4">Shipping Address</legend>
-              <div className="grid grid-cols-2 gap-4">
-                {['firstName', 'lastName', 'address', 'city', 'state', 'pincode', 'phone'].map(field => (
-                  <div key={field}>
-                    <label htmlFor={`shipping_${field}`} className="block text-sm font-semibold mb-1 capitalize">
-                      {field.replace(/([A-Z])/g, ' $1')}
-                    </label>
+        <div className="grid lg:grid-cols-3 gap-8">
+          {/* left */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Payment method */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+              <div className="flex items-center mb-6">
+                <div className="w-2 h-8 bg-red-600 rounded-full mr-3"></div>
+                <h2 className="text-2xl font-bold text-gray-900">Payment Method</h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {[
+                  { id: "razorpay", name: "Razorpay", icon: "https://razorpay.com/assets/razorpay-glyph.svg", description: "Pay securely with Razorpay" },
+                  { id: "cod", name: "Cash on Delivery", icon: "https://cdn-icons-png.flaticon.com/128/11181/11181299.png", description: "Pay when you receive your order" },
+                ].map((method) => (
+                  <button key={method.id} type="button" onClick={() => setSelectedPaymentMethod(method.id)} className={`p-6 border-2 rounded-xl flex flex-col items-start transition-all duration-200 ${selectedPaymentMethod === method.id ? "border-red-500 bg-red-50 shadow-md transform scale-105" : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"}`}>
+                    <div className="flex items-center mb-3">
+                      <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center mr-3 ${selectedPaymentMethod === method.id ? "border-red-500 bg-red-500" : "border-gray-300"}`}>
+                        {selectedPaymentMethod === method.id && <div className="w-2 h-2 bg-white rounded-full" />}
+                      </div>
+                      <img src={method.icon} alt={method.name} className="h-8 object-contain" />
+                    </div>
+                    <h3 className="font-semibold text-gray-900 text-lg mb-1">{method.name}</h3>
+                    <p className="text-gray-600 text-sm">{method.description}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Billing address */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+              <div className="flex items-center mb-6">
+                <div className="w-2 h-8 bg-red-600 rounded-full mr-3"></div>
+                <h2 className="text-2xl font-bold text-gray-900">Billing Address</h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {billingFields.map((field) => (
+                  <div key={field.key} className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-700">{field.label}</label>
                     <input
-                      type={field === 'phone' ? 'tel' : 'text'}
-                      id={`shipping_${field}`}
-                      name={field}
-                      placeholder={field.charAt(0).toUpperCase() + field.slice(1)}
-                      value={shippingAddress[field]}
-                      onChange={handleShippingChange}
-                      className={`p-2 border rounded w-full ${errors[`shipping_${field}`] ? 'border-red-500' : 'border-gray-300'}`}
-                      required
+                      placeholder={`Enter your ${field.label}`}
+                      value={billingAddress[field.key]}
+                      onChange={(e) => setBillingAddress({ ...billingAddress, [field.key]: e.target.value })}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-colors placeholder-gray-400"
                     />
-                    {errors[`shipping_${field}`] && (
-                      <p className="text-red-600 text-sm mt-1">{errors[`shipping_${field}`]}</p>
-                    )}
                   </div>
                 ))}
               </div>
-            </fieldset>
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Country</label>
+                <div className="px-4 py-3 border border-gray-300 rounded-lg bg-gray-50 text-gray-600">{billingAddress.country}</div>
+              </div>
+            </div>
+          </div>
 
-            <fieldset className="mb-8">
-              <label className="flex items-center mb-4 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sameAsShipping}
-                  onChange={() => setSameAsShipping(prev => !prev)}
-                  className="mr-2"
-                />
-                Billing address same as shipping
-              </label>
-              {!sameAsShipping && (
-                <div className="grid grid-cols-2 gap-4">
-                  {['firstName', 'lastName', 'address', 'city', 'state', 'pincode', 'phone'].map(field => (
-                    <div key={field}>
-                      <label htmlFor={`billing_${field}`} className="block text-sm font-semibold mb-1 capitalize">
-                        {field.replace(/([A-Z])/g, ' $1')}
-                      </label>
-                      <input
-                        type={field === 'phone' ? 'tel' : 'text'}
-                        id={`billing_${field}`}
-                        name={field}
-                        placeholder={field.charAt(0).toUpperCase() + field.slice(1)}
-                        value={billingAddress[field]}
-                        onChange={handleBillingChange}
-                        className={`p-2 border rounded w-full ${errors[`billing_${field}`] ? 'border-red-500' : 'border-gray-300'}`}
-                        required
-                      />
-                      {errors[`billing_${field}`] && (
-                        <p className="text-red-600 text-sm mt-1">{errors[`billing_${field}`]}</p>
+          {/* right */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 sticky top-8 h-fit">
+            <div className="flex items-center mb-6">
+              <div className="w-2 h-8 bg-red-600 rounded-full mr-3"></div>
+              <h2 className="text-2xl font-bold text-gray-900">Order Summary</h2>
+            </div>
+
+            <div className="space-y-4 mb-6 max-h-80 overflow-y-auto">
+              {cart.map((item, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-22 h-12 rounded-lg flex items-center justify-center overflow-hidden">
+                      {item.imageUrl ? <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" /> : (
+                        <div className="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 flex items-center justify-center">
+                          <svg className="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                        </div>
                       )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </fieldset>
-
-            <fieldset className="mb-8">
-              <legend className="font-medium text-lg mb-4">Payment Method</legend>
-              <div className="space-y-3">
-                <label className="flex items-center p-3 border rounded cursor-pointer">
-                  <input
-                    type="radio"
-                    name="paymentMethod"
-                    value="cod"
-                    checked={paymentMethod === 'cod'}
-                    onChange={() => setPaymentMethod('cod')}
-                    className="mr-2"
-                  />
-                  Cash on Delivery (COD)
-                </label>
-                <label className="flex items-center p-3 border rounded cursor-pointer">
-                  <input
-                    type="radio"
-                    name="paymentMethod"
-                    value="card"
-                    checked={paymentMethod === 'card'}
-                    onChange={() => setPaymentMethod('card')}
-                    className="mr-2"
-                  />
-                  Credit/Debit Card
-                </label>
-
-                {paymentMethod === 'card' && (
-                  <div className="mt-4 space-y-4 p-4 border rounded bg-white">
                     <div>
-                      <label htmlFor="cardNumber" className="block text-sm font-semibold mb-1">Card Number</label>
-                      <input
-                        type="text"
-                        id="cardNumber"
-                        name="cardNumber"
-                        maxLength={19}
-                        placeholder="1234 5678 9012 3456"
-                        value={cardDetails.cardNumber}
-                        onChange={handleCardChange}
-                        className={`p-2 border rounded w-full ${errors.cardNumber ? 'border-red-500' : 'border-gray-300'}`}
-                        required
-                      />
-                      {errors.cardNumber && <p className="text-red-600 text-sm mt-1">{errors.cardNumber}</p>}
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label htmlFor="expiry" className="block text-sm font-semibold mb-1">Expiry (MM/YY)</label>
-                        <input
-                          type="text"
-                          id="expiry"
-                          name="expiry"
-                          maxLength={5}
-                          placeholder="MM/YY"
-                          value={cardDetails.expiry}
-                          onChange={handleCardChange}
-                          className={`p-2 border rounded w-full ${errors.expiry ? 'border-red-500' : 'border-gray-300'}`}
-                          required
-                        />
-                        {errors.expiry && <p className="text-red-600 text-sm mt-1">{errors.expiry}</p>}
-                      </div>
-                      <div>
-                        <label htmlFor="cvv" className="block text-sm font-semibold mb-1">CVV</label>
-                        <input
-                          type="password"
-                          id="cvv"
-                          name="cvv"
-                          maxLength={4}
-                          placeholder="123"
-                          value={cardDetails.cvv}
-                          onChange={handleCardChange}
-                          className={`p-2 border rounded w-full ${errors.cvv ? 'border-red-500' : 'border-gray-300'}`}
-                          required
-                        />
-                        {errors.cvv && <p className="text-red-600 text-sm mt-1">{errors.cvv}</p>}
-                      </div>
-                    </div>
-                    <div>
-                      <label htmlFor="nameOnCard" className="block text-sm font-semibold mb-1">Name on Card</label>
-                      <input
-                        type="text"
-                        id="nameOnCard"
-                        name="nameOnCard"
-                        placeholder="Name on Card"
-                        value={cardDetails.nameOnCard}
-                        onChange={handleCardChange}
-                        className={`p-2 border rounded w-full ${errors.nameOnCard ? 'border-red-500' : 'border-gray-300'}`}
-                        required
-                      />
-                      {errors.nameOnCard && <p className="text-red-600 text-sm mt-1">{errors.nameOnCard}</p>}
+                      <p className="font-medium text-gray-900">{item.name}</p>
+                      <p className="text-sm text-gray-600">Qty: {item.quantity}</p>
                     </div>
                   </div>
-                )}
+                  <p className="font-semibold text-gray-900">${((item.price || 0) * (item.quantity || 1)).toFixed(2)}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-gray-200 pt-4 mb-6">
+              <div className="flex justify-between items-center">
+                <span className="text-lg font-semibold text-gray-900">Total Amount</span>
+                <span className="text-2xl font-bold text-red-600">${cartTotal.toFixed(2)}</span>
               </div>
-            </fieldset>
+              {selectedPaymentMethod === "cod" && <p className="text-sm text-gray-600 mt-2 text-center">+ Cash handling charges may apply</p>}
+            </div>
 
-            {submitError && (
-              <p className="mb-4 text-red-700 text-center font-semibold">{submitError}</p>
-            )}
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className={`w-full py-3 rounded text-white ${isSubmitting ? 'bg-gray-500 cursor-not-allowed' : 'bg-black hover:bg-gray-800'} transition`}
-            >
-              {isSubmitting ? 'Processing...' : 'Place Order'}
+            <button type={paymentButtonType} onClick={handlePayment} disabled={isProcessing || !cart.length} className={`w-full py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-200 ${isProcessing || !cart.length ? "bg-gray-400 cursor-not-allowed text-gray-700" : "bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white shadow-lg hover:shadow-xl transform hover:scale-105"}`}>
+              {isProcessing ? (
+                <div className="flex items-center justify-center">
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                  Processing...
+                </div>
+              ) : selectedPaymentMethod === "cod" ? (
+                `Place Order - $${cartTotal.toFixed(2)}`
+              ) : (
+                `Pay Now  $${cartTotal.toFixed(2)}`
+              )}
             </button>
-          </form>
+
+            <div className="mt-4 text-center">
+              <div className="flex items-center justify-center space-x-2 text-sm text-gray-600">
+                <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                <span>Secure SSL Encryption</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
-};
+}
 
-export default PaymentForm;
+export default Payment;

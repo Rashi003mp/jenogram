@@ -1,4 +1,6 @@
+// src/context/AdminRevenueContext.jsx
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import { useAuth } from '../../../context/AuthContext';
 import { URL } from '../../api';
 
 const AdminRevenueContext = createContext();
@@ -18,16 +20,100 @@ const isThisMonth = date => {
 };
 
 export function AdminRevenueProvider({ children }) {
+  const { token } = useAuth(); // assumes your AuthContext provides token
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Normalize order DTO to shape expected by UI
+  const normalizeOrders = (orderDtos = []) => {
+    return orderDtos.map(o => {
+      const createdOn = o.createdOn ?? o.CreatedOn ?? o.created_at ?? o.createdAt ?? null;
+      const items = (o.items ?? o.Items ?? []).map(i => ({
+        productId: i.productId ?? i.ProductId ?? i.ProductID ?? i.productId,
+        name: i.productName ?? i.ProductName ?? i.name ?? '',
+        images: i.images ?? i.Images ?? [],
+        quantity: Number(i.quantity ?? i.Quantity ?? 0),
+        price: Number(i.price ?? i.Price ?? 0)
+      }));
+
+      const address = o.address ?? o.Address ?? null;
+
+      return {
+        // basic identifiers
+        id: o.id ?? o.Id ?? null,
+        userId: o.userId ?? o.UserId ?? null,
+        name: o.name ?? o.Name ?? (address?.fullName ?? '') ?? '',
+        // amounts & payment
+        totalAmount: Number(o.totalAmount ?? o.TotalAmount ?? 0),
+        paymentStatus: o.paymentStatus ?? o.PaymentStatus ?? '',
+        paymentMethod: o.paymentMethod ?? o.PaymentMethod ?? '',
+        // status mapping
+        status: (o.orderStatus ?? o.order_state ?? o.OrderStatus ?? '').toString(),
+        // timestamps
+        createdOn,
+        // compatibility alias used in some components
+        placed_at: createdOn,
+        // cart & shipping
+        cart: items,
+        items,
+        address,
+        shipping: address,
+        // original raw DTO (helpful for debugging)
+        _raw: o
+      };
+    });
+  };
+
   // Fetch orders from backend
-  const fetchOrders = async () => {
+  const fetchOrders = async (pageNumber = 1, limit = 10) => {
     setLoading(true);
     try {
-      const res = await fetch(`${URL}/users`);
-      const users = await res.json();
-      setOrders(users.flatMap(u => u.orders || []));
+      const adminUrl = `${URL}/Order/all?pageNumber=${pageNumber}&limit=${limit}`;
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      let res = await fetch(adminUrl, { headers });
+
+      // fallback if admin endpoint restricted
+      if (res.status === 401 || res.status === 403) {
+        const userUrl = `${URL}/Order`;
+        res = await fetch(userUrl, { headers });
+      }
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error('Failed to fetch orders:', res.status, errText);
+        setOrders([]);
+        return;
+      }
+
+      const data = await res.json();
+
+      // extract array of DTOs from common ApiResponse shapes
+      let orderDtos = [];
+
+      if (data && typeof data === 'object') {
+        // ApiResponse with data: { items: [...] } or data: { Items: [...] }
+        if (data.data) {
+          const inner = data.data;
+          if (Array.isArray(inner.items)) orderDtos = inner.items;
+          else if (Array.isArray(inner.Items)) orderDtos = inner.Items;
+          else if (Array.isArray(inner)) orderDtos = inner;
+          else orderDtos = inner.Items ?? inner.items ?? inner ?? [];
+        } else if (Array.isArray(data.items)) {
+          orderDtos = data.items;
+        } else if (Array.isArray(data.Items)) {
+          orderDtos = data.Items;
+        } else if (Array.isArray(data)) {
+          orderDtos = data;
+        } else {
+          // last attempt: top-level properties
+          orderDtos = data.Items ?? data.items ?? data.data ?? [];
+        }
+      }
+
+      if (!Array.isArray(orderDtos)) orderDtos = [];
+
+      const normalized = normalizeOrders(orderDtos);
+      setOrders(normalized);
     } catch (err) {
       console.error('Failed to fetch users or orders:', err);
       setOrders([]);
@@ -37,20 +123,17 @@ export function AdminRevenueProvider({ children }) {
   };
 
   useEffect(() => {
-    // Initial load
     fetchOrders();
 
-    // Listen for global "ordersUpdated" events
     const handleOrdersUpdated = () => {
       fetchOrders();
     };
     window.addEventListener('ordersUpdated', handleOrdersUpdated);
 
-    // Cleanup the listener
     return () => {
       window.removeEventListener('ordersUpdated', handleOrdersUpdated);
     };
-  }, []);
+  }, [token]);
 
   const revenueData = useMemo(() => {
     let totalRevenue = 0,
@@ -64,18 +147,18 @@ export function AdminRevenueProvider({ children }) {
 
     orders.forEach(order => {
       const amount = Number(order.totalAmount) || 0;
-      const placed = new Date(order.placed_at);
+      const created = order.createdOn ? new Date(order.createdOn) : new Date();
 
       totalRevenue += amount;
-      totalPiecesSold += order.cart?.reduce((acc, item) => acc + (item.quantity || 0), 0) || 0;
+      totalPiecesSold += (order.items?.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0) || 0);
 
-      if (isToday(placed)) {
+      if (isToday(created)) {
         todayRevenue += amount;
         todayOrdersCount++;
-        todayPiecesSold += order.cart?.reduce((acc, item) => acc + (item.quantity || 0), 0) || 0;
+        todayPiecesSold += (order.items?.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0) || 0);
       }
-      if (isThisWeek(placed)) weekRevenue += amount;
-      if (isThisMonth(placed)) monthRevenue += amount;
+      if (isThisWeek(created)) weekRevenue += amount;
+      if (isThisMonth(created)) monthRevenue += amount;
     });
 
     return {
@@ -96,7 +179,7 @@ export function AdminRevenueProvider({ children }) {
       value={{
         ...revenueData,
         loading,
-        reloadOrders: fetchOrders // in case you want manual reload too
+        reloadOrders: fetchOrders
       }}
     >
       {children}

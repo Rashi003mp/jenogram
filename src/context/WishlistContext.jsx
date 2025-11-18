@@ -1,37 +1,126 @@
-// src/context/WishlistContext.js
-import React, { createContext, useState, useEffect } from "react";
+import React, { createContext, useState, useContext, useEffect } from "react";
+import { toast } from "react-toastify";
+import { WishlistService } from "../Services/WishlistService";
+import { useAuth } from "./AuthContext";
 
-export const WishlistContext = createContext();
+const WishlistContext = createContext();
+
+export const useWishlist = () => {
+  const context = useContext(WishlistContext);
+  if (!context) {
+    throw new Error("useWishlist must be used within a WishlistProvider");
+  }
+  return context;
+};
 
 export const WishlistProvider = ({ children }) => {
-  const [user, setUser] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("user")) || null;
-    } catch {
-      return null;
-    }
-  });
+  const { user } = useAuth();
+  const [wishlistItems, setWishlistItems] = useState([]);
+  const [loading, setLoading] = useState(false);
 
-  const [wishlist, setWishlist] = useState(user?.wishlist || []);
-
-  // Keep wishlist in sync with user
+  // ✅ Load wishlist when user logs in
   useEffect(() => {
-    if (user) {
-      setWishlist(user.wishlist || []);
+    if (user?.id) {
+      fetchWishlist();
     } else {
-      setWishlist([]);
+      setWishlistItems([]);
     }
-  }, [user]);
+  }, [user?.id]);
 
-  // Save user to localStorage whenever updated
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem("user", JSON.stringify(user));
+  // ✅ Fetch wishlist from backend
+  const fetchWishlist = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const data = await WishlistService.getWishlist();
+
+      // Normalize all items to a consistent structure
+      const normalized = Array.isArray(data)
+        ? data.map((item) => ({
+            id: item.productId, // convert productId -> id for consistency
+            name: item.name,
+            price: item.price,
+            mainImageUrl: item.mainImageUrl,
+          }))
+        : [];
+
+      setWishlistItems(normalized);
+    } catch (error) {
+      console.error("Error fetching wishlist:", error);
+      toast.error("Failed to fetch wishlist");
+    } finally {
+      setLoading(false);
     }
-  }, [user]);
+  };
+
+  // ✅ Toggle add/remove wishlist item
+  const toggleWishlist = async (productId) => {
+    if (!user) {
+      toast.warning("Please log in first!");
+      return;
+    }
+
+    const pid = Number(productId);
+
+    // Check if product already in wishlist
+    const exists = wishlistItems.some((item) => Number(item.id) === pid);
+
+    // Optimistic update (update immediately before API finishes)
+    const prevItems = wishlistItems;
+    setWishlistItems((prev) =>
+      exists
+        ? prev.filter((item) => Number(item.id) !== pid) // remove
+        : [...prev, { id: pid }] // add placeholder
+    );
+
+    try {
+      await WishlistService.toggleWishlist(pid);
+      toast.success(exists ? "Removed from wishlist!" : "Added to wishlist!");
+    } catch (error) {
+      setWishlistItems(prevItems); // rollback on failure
+      toast.error("Failed to update wishlist");
+      console.error("Error toggling wishlist:", error);
+    }
+  };
+
+  // ✅ Check if a product is in wishlist
+  const isInWishlist = (productId) =>
+    wishlistItems.some((item) => Number(item.id) === Number(productId));
+
+  // ✅ Clear all wishlist items
+  const clearWishlist = async () => {
+    if (!user) return;
+    if (!wishlistItems.length) {
+      toast.info("Wishlist is already empty.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await Promise.all(
+        wishlistItems.map((item) => WishlistService.toggleWishlist(item.id))
+      );
+      setWishlistItems([]);
+      toast.success("Wishlist cleared!");
+    } catch (error) {
+      console.error("Error clearing wishlist:", error);
+      toast.error("Failed to clear wishlist");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <WishlistContext.Provider value={{ user, setUser, wishlist, setWishlist }}>
+    <WishlistContext.Provider
+      value={{
+        wishlistItems,
+        loading,
+        toggleWishlist,
+        isInWishlist,
+        fetchWishlist,
+        clearWishlist,
+      }}
+    >
       {children}
     </WishlistContext.Provider>
   );

@@ -4,6 +4,8 @@ import Navbar from "./components/Navbar";
 import RoleBasedRoute from "./RoleBasedRoute";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
+import Payment from "./pages/payment/PaymentForm";
+
 
 // ✅ Lazy-loaded imports
 const Login = lazy(() => import("./context/Login"));
@@ -15,7 +17,6 @@ const ProductDetails = lazy(() => import("./pages/product/ProductDetails"));
 const WishlistPage = lazy(() => import("./pages/wishlist/WishlistPage"));
 const Profile = lazy(() => import("./pages/Profile/profile"));
 const CartPage = lazy(() => import("./pages/Cart/CartPage"));
-const CallPay = lazy(() => import("./pages/payment/CallPay"));
 const OrderConfirmation = lazy(() => import("./pages/Orders/OrderConfirmation"));
 const OrderList = lazy(() => import("./pages/Orders/OrderList"));
 const AdminDashboard = lazy(() => import("./pages/AdminPanal/pages/AdminDashboard"));
@@ -70,7 +71,7 @@ function App() {
             <Route path="/wishlist" element={<WishlistPage />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/cart" element={<CartPage />} />
-            <Route path="/payment" element={<CallPay />} />
+            <Route path="/payment" element={<Payment />} />
             <Route path="/order-confirmation" element={<OrderConfirmation />} />
             <Route path="/order-list" element={<OrderList />} />
           </Route>

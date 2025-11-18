@@ -4,6 +4,7 @@ import { URL } from "../api";
 
 const CategoryCards = () => {
   const [products, setProducts] = useState([]);
+  console.log(products);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
@@ -14,7 +15,7 @@ const CategoryCards = () => {
   ];
 
   useEffect(() => {
-    fetch(`${URL}/products`)
+    fetch(`${URL}/product/filter`)
       .then((res) => res.json())
       .then((data) => {
         setProducts(data);
@@ -25,7 +26,7 @@ const CategoryCards = () => {
 
   const getCategoryImage = (catKey) => {
     
-    const categoryProduct = products.find((p) => p.category === catKey);
+    const categoryProduct = products.data.find((p) => p.category === catKey);
     return categoryProduct?.images?.[0] ?? "/placeholder-luxury.jpg";
   };
 
@@ -77,7 +78,7 @@ const CategoryCards = () => {
                 {cat.label}
               </h3>
               <p className="text-sm text-gray-600 mt-1">
-                {products.filter(p => p.category === cat.key).length} items
+                {products.data.filter(p => p.category === cat.key).length} items
               </p>
               <div className="w-12 h-px bg-gray-300 mx-auto mt-3 group-hover:w-24 transition-all duration-300"></div>
             </div>

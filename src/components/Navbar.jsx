@@ -9,14 +9,16 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useCart } from '../context/CartContext';
 
 const Navbar = () => {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const [userDropdownOpen, setUserDropdownOpen] = useState(false);
-    const [cartItemsCount, setCartItemsCount] = useState(0);
+    const [cartItemsCount, setCartItemsCount] = useState();
     const dropdownRef = useRef(null);
+    const { items: cartItems = [] } = useCart();
 
     // Close user dropdown if clicking outside
     useEffect(() => {
@@ -33,30 +35,37 @@ const Navbar = () => {
 
     // Load and watch cart count
     useEffect(() => {
-        function getCartCount() {
-            const userData = JSON.parse(localStorage.getItem('user')) || {};
-            const mycart = userData.cart || [];
-            const count = mycart.reduce((sum, item) => sum + (item.quantity || 1), 0);
+        // compute & set count from cartItems (React state)
+        const computeCount = () => {
+            const count = (cartItems || []).reduce(
+                (sum, it) => sum + (it.quantity ?? it.qty ?? 1),
+                0
+            );
             setCartItemsCount(count);
-        }
-
-        getCartCount();
-
-        // 🔹 Listen for cart update event from SAME TAB
-        const handleCartUpdate = () => getCartCount();
-        window.addEventListener('cartUpdated', handleCartUpdate);
-
-        // 🔹 Listen for localStorage change (other tabs)
-        const handleStorageChange = (e) => {
-            if (e.key === 'user') getCartCount();
         };
-        window.addEventListener('storage', handleStorageChange);
+
+        // initial compute
+        computeCount();
+
+        // listen for custom same-tab event (optional fallback if other code dispatches it)
+        const onCartUpdated = () => computeCount();
+        window.addEventListener('cartUpdated', onCartUpdated);
+
+        // listen for cross-tab changes to auth/cart (storage event only fires in OTHER tabs)
+        const onStorage = (e) => {
+            // react when auth or cart keys change — adjust keys if you use different ones
+            if (e.key === 'auth' || e.key === 'user' || e.key === 'cart') {
+                // cartItems won't change in this tab automatically, but recomputing keeps badge accurate
+                computeCount();
+            }
+        };
+        window.addEventListener('storage', onStorage);
 
         return () => {
-            window.removeEventListener('cartUpdated', handleCartUpdate);
-            window.removeEventListener('storage', handleStorageChange);
+            window.removeEventListener('cartUpdated', onCartUpdated);
+            window.removeEventListener('storage', onStorage);
         };
-    }, []);
+    }, [cartItems]);
 
     const handleNavigation = (path, requiresAuth = false) => {
         setMobileMenuOpen(false);
@@ -151,7 +160,7 @@ const Navbar = () => {
                                 >
                                     <UserIcon className="h-5 w-5" aria-hidden="true" />
                                     <span className="text-sm text-gray-700 hidden md:inline-block">
-                                        {user.name.split(' ')[0]}
+                                        {user.name}
                                     </span>
                                 </button>
                             ) : (

@@ -1,3 +1,4 @@
+// src/pages/ClientManagement.jsx
 import React, { useEffect, useState } from "react";
 import {
   MagnifyingGlassIcon,
@@ -10,8 +11,7 @@ import {
   ChevronUpDownIcon,
 } from "@heroicons/react/24/outline";
 
-// ✅ Import your AdminSidebar
-import AdminSidebar from "../components/AdminSidebar"; 
+import AdminSidebar from "../components/AdminSidebar";
 import { useAuth } from "../../../context/AuthContext";
 import { useAdminRevenue } from "../Context/AdminContext";
 import { URL } from "../../api";
@@ -22,47 +22,137 @@ export default function ClientManagement() {
   const [search, setSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
 
-  // ✅ Sidebar UI state
+  // Sidebar UI state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
-  // ✅ Logged in admin info + order count for badge
-  const { isAdmin, user,logout } = useAuth();
+  // Auth + admin info + order count for badge
+  const { isAdmin, user, logout, token } = useAuth();
   const { todayOrdersCount } = useAdminRevenue();
 
-  // Fetch all users
-    // Fetch all users
+  // Helper: normalize single user DTO to consistent shape
+  const normalizeUser = (u) => {
+    if (!u) return null;
+    // detect common property names
+    const id = u.id ?? u.Id ?? u.userId ?? u.UserId;
+    const name = u.name ?? u.fullName ?? u.FullName ?? u.Name ?? "";
+    const email = u.email ?? u.Email ?? u.userEmail ?? "";
+    const role = u.role ?? u.Role ?? "user";
+    const isBlocked = (u.isBlocked ?? u.IsBlocked ?? u.isBlock ?? u.IsBlock ?? u.IsBlocked) === true;
+    // createdOn variants
+    const createdOn =
+      u.createdOn ??
+      u.created_at ??
+      u.createdAt ??
+      u.CreatedOn ??
+      u.CreatedAt ??
+      u.created ??
+      null;
+
+    return {
+      id,
+      name,
+      email,
+      role,
+      isBlocked,
+      createdOn,
+      _raw: u,
+    };
+  };
+
+  // Fetch all users (uses token, and handles ApiResponse wrapper)
   const fetchClients = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const res = await fetch(`${URL}/users`);
-      const data = await res.json();
-      // ✅ Only keep non-admin users
-      const onlyUsers = data.filter(client => client.role === "user");
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${URL}/user`, { headers });
+      if (!res.ok) {
+        console.error("Failed to fetch clients:", res.status);
+        setClients([]);
+        return;
+      }
+
+      const body = await res.json();
+      // body may be: ApiResponse<IEnumerable<User>> => { statusCode, message, data: [...] }
+      // or it could be raw array. Normalize both.
+      let usersArray = [];
+
+      if (body && typeof body === "object") {
+        if (Array.isArray(body.data)) usersArray = body.data;
+        else if (Array.isArray(body)) usersArray = body;
+        else if (Array.isArray(body.items)) usersArray = body.items;
+        else if (Array.isArray(body.Items)) usersArray = body.Items;
+        else if (Array.isArray(body.data?.items)) usersArray = body.data.items;
+        else usersArray = [];
+      }
+
+      // Filter out admins and map to normalized shape
+      const onlyUsers = usersArray
+        .map(normalizeUser)
+        .filter((u) => u && (u.role?.toString().toLowerCase() !== "admin"));
+
       setClients(onlyUsers);
     } catch (error) {
       console.error("Error fetching clients:", error);
+      setClients([]);
     } finally {
       setLoading(false);
     }
   };
 
-
   useEffect(() => {
     fetchClients();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]); // refetch on token change
 
   // Block / Unblock Toggle
-  const toggleBlockStatus = async (id, currentStatus) => {
+  // Server toggles block state server-side; here we call the API and refresh
+  const toggleBlockStatus = async (id) => {
     try {
-      await fetch(`${URL}/users/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isBlock: !currentStatus }),
-      });
-      fetchClients();
+      setLoading(true);
+      const headers = {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+
+      // PATCH to server endpoint that toggles block/unblock (server decides)
+      // Many servers implement: PATCH /user/block/{id} or PATCH /users/{id}
+      // Your backend service method is BlockUnblockUserAsync(int id) — try conventional route:
+      const endpointCandidates = [
+        `${URL}/User/block-unblock/${id}`,
+        `${URL}/user/${id}/block`,
+        `${URL}/users/${id}`, // original attempt, kept as fallback
+      ];
+
+      let res = null;
+      for (const ep of endpointCandidates) {
+        try {
+          res = await fetch(ep, { method: "PUT", headers });
+          // if server responded with 404/403/200 etc we break and inspect
+          if (res) break;
+        } catch (err) {
+          // try next candidate
+          res = null;
+        }
+      }
+
+      if (!res) {
+        console.error("Failed to call block/unblock endpoint (no response).");
+      } else {
+        const body = await res.json().catch(() => null);
+        // if server returned 200, refresh clients
+        if (res.ok) {
+          await fetchClients();
+        } else {
+          console.error("Block/unblock failed:", res.status, body);
+          // still refresh list in case server toggled anyway
+          await fetchClients();
+        }
+      }
     } catch (error) {
       console.error("Error updating block status:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -75,7 +165,7 @@ export default function ClientManagement() {
     setSortConfig({ key, direction });
   };
 
-  // Filter + Sort
+  // Filter + Sort (use normalized fields)
   const filteredClients = clients
     .filter(
       (client) =>
@@ -84,16 +174,26 @@ export default function ClientManagement() {
     )
     .sort((a, b) => {
       if (!sortConfig.key) return 0;
-      if (a[sortConfig.key] < b[sortConfig.key]) {
-        return sortConfig.direction === "asc" ? -1 : 1;
+      const ka = a[sortConfig.key];
+      const kb = b[sortConfig.key];
+
+      // If sorting by createdOn convert to date
+      if (sortConfig.key === "createdOn") {
+        const da = ka ? new Date(ka) : new Date(0);
+        const db = kb ? new Date(kb) : new Date(0);
+        return sortConfig.direction === "asc" ? da - db : db - da;
       }
-      if (a[sortConfig.key] > b[sortConfig.key]) {
-        return sortConfig.direction === "asc" ? 1 : -1;
-      }
+
+      if (ka == null && kb == null) return 0;
+      if (ka == null) return sortConfig.direction === "asc" ? -1 : 1;
+      if (kb == null) return sortConfig.direction === "asc" ? 1 : -1;
+
+      if (ka < kb) return sortConfig.direction === "asc" ? -1 : 1;
+      if (ka > kb) return sortConfig.direction === "asc" ? 1 : -1;
       return 0;
     });
 
-  // ✅ Restrict to admins
+  // Restrict to admins
   if (!isAdmin) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#FAF9F6]">
@@ -104,7 +204,7 @@ export default function ClientManagement() {
 
   return (
     <div className="flex min-h-screen bg-[#FAF9F6]">
-      {/* ✅ Sidebar */}
+      {/* Sidebar */}
       <AdminSidebar
         user={user}
         logout={logout}
@@ -115,9 +215,9 @@ export default function ClientManagement() {
         setIsMobileOpen={setIsMobileOpen}
       />
 
-      {/* ✅ Main Content */}
+      {/* Main Content */}
       <div className="flex-1 p-6">
-        {/* Mobile hamburger button */}
+        {/* Mobile hamburger */}
         <div className="md:hidden mb-4">
           <button
             onClick={() => setIsMobileOpen(true)}
@@ -127,7 +227,7 @@ export default function ClientManagement() {
           </button>
         </div>
 
-        {/* Header Section */}
+        {/* Header */}
         <div className="bg-white rounded-xl shadow-sm border border-[#E5D9C5] p-6">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
             <div className="mb-4 md:mb-0">
@@ -161,15 +261,12 @@ export default function ClientManagement() {
             </div>
           ) : filteredClients.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-[#5A5A5A]">
-                No clients found matching your search
-              </p>
+              <p className="text-[#5A5A5A]">No clients found matching your search</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-[#E5D9C5]">
                 <thead className="bg-[#F8F5F0]">
-                  {/* Table header row */}
                   <tr>
                     <th
                       className="px-6 py-3 text-left text-xs font-medium text-[#5A5A5A] tracking-wider cursor-pointer"
@@ -199,13 +296,13 @@ export default function ClientManagement() {
                     </th>
                     <th
                       className="px-6 py-3 text-center text-xs font-medium text-[#5A5A5A] tracking-wider cursor-pointer"
-                      onClick={() => requestSort("isBlock")}
+                      onClick={() => requestSort("isBlocked")}
                     >
                       Status
                     </th>
                     <th
                       className="px-6 py-3 text-center text-xs font-medium text-[#5A5A5A] tracking-wider cursor-pointer"
-                      onClick={() => requestSort("created_at")}
+                      onClick={() => requestSort("createdOn")}
                     >
                       <div className="flex items-center justify-center">
                         <CalendarIcon className="h-4 w-4 mr-1" />
@@ -221,7 +318,7 @@ export default function ClientManagement() {
                 <tbody className="bg-white divide-y divide-[#E5D9C5]">
                   {filteredClients.map((client) => (
                     <tr
-                      key={client.id}
+                      key={client.id ?? client._raw?.Id ?? client._raw?.id}
                       className="hover:bg-[#FAF9F6] transition-colors duration-150"
                     >
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -241,11 +338,11 @@ export default function ClientManagement() {
                       <td className="px-6 py-4 text-sm text-[#5A5A5A]">{client.email}</td>
                       <td className="px-6 py-4 text-center">
                         <span className="px-2 py-1 text-xs rounded-full bg-[#F8F5F0] text-[#5A5A5A]">
-                          {client.role || "user"}
+                          {client.role ===1?"Admin" : "user"}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-center">
-                        {client.isBlock ? (
+                        {client.isBlocked ? (
                           <span className="px-2 py-1 text-xs rounded-full bg-red-100 text-red-600 flex items-center justify-center">
                             <NoSymbolIcon className="h-3 w-3 mr-1" />
                             Blocked
@@ -258,29 +355,24 @@ export default function ClientManagement() {
                         )}
                       </td>
                       <td className="px-6 py-4 text-center text-sm text-[#5A5A5A]">
-                        {client.created_at
-                          ? new Date(client.created_at).toLocaleDateString(
-                              "en-US",
-                              {
-                                year: "numeric",
-                                month: "short",
-                                day: "numeric",
-                              }
-                            )
+                        {client.createdOn
+                          ? new Date(client.createdOn).toLocaleDateString("en-US", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            })
                           : "-"}
                       </td>
                       <td className="px-6 py-4 text-center">
                         <button
-                          onClick={() =>
-                            toggleBlockStatus(client.id, client.isBlock)
-                          }
+                          onClick={() => toggleBlockStatus(client.id ?? client._raw?.Id)}
                           className={`px-3 py-1.5 rounded-md text-xs font-medium tracking-wider transition-colors duration-200 ${
-                            client.isBlock
+                            client.isBlocked
                               ? "bg-[#CC9966] text-white hover:bg-[#B38658]"
                               : "bg-white text-[#CC9966] border border-[#CC9966] hover:bg-[#F8F5F0]"
                           }`}
                         >
-                          {client.isBlock ? "Unblock Client" : "Block Client"}
+                          {client.isBlocked ? "Unblock Client" : "Block Client"}
                         </button>
                       </td>
                     </tr>

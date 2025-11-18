@@ -5,22 +5,24 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 
 const Registration = () => {
-
   const navigate = useNavigate();
-  const { user, register } = useAuth();
+  const { user, register /*, login */ } = useAuth();
 
-
+  // Redirect already-authenticated users
   useEffect(() => {
     if (user && user.role === "user") {
-      navigate("/")
+      navigate("/", { replace: true });
     }
-  }, [])
+  }, [user, navigate]);
+
   const validationSchema = Yup.object({
     name: Yup.string()
       .matches(/^[a-zA-Z\s'-]+$/, "Name can only contain letters, spaces, hyphens, and apostrophes")
       .min(2, "Name must be at least 2 characters")
       .required("Name is required"),
     email: Yup.string()
+      .trim()
+      .lowercase()
       .email("Invalid email address")
       .required("Email is required"),
     password: Yup.string()
@@ -42,16 +44,36 @@ const Registration = () => {
     },
     validationSchema,
     onSubmit: async (values, { setSubmitting, resetForm, setStatus }) => {
-      const { name, email, password } = values;
-      const result = await register({ name, email, password });
+      setStatus(undefined);
+      setSubmitting(true);
 
-      if (result.success) {
-        setStatus({ success: "Registration successful!" });
+      // Trim and normalize before sending
+      const registerPayload = {
+        name: values.name.trim(),
+        email: values.email.trim().toLowerCase(),
+        password: values.password,
+      };
+
+      const result = await register(registerPayload);
+
+      if (result && result.success) {
+        // show message then redirect to login
+        setStatus({ success: result.message ?? "Registration successful!" });
         resetForm();
-        navigate("/login");
+
+        // Option A: redirect user to login page
+        navigate("/login", { replace: true });
+
+        // Option B (uncomment to auto-login):
+        // if you want to auto-login immediately (backend must return token or you must call login):
+        // const loginResult = await login(registerPayload.email, registerPayload.password);
+        // if (loginResult?.success) navigate("/", { replace: true });
       } else {
-        setStatus({ error: result.error });
+        // prefer server error messages; fallback to generic message
+        const errorMsg = result?.error ?? result?.message ?? "Registration failed";
+        setStatus({ error: errorMsg });
       }
+
       setSubmitting(false);
     },
   });
@@ -64,8 +86,7 @@ const Registration = () => {
         <p className="text-gray-600">Create a new account</p>
       </div>
 
-      <form onSubmit={formik.handleSubmit} className="space-y-4">
-
+      <form onSubmit={formik.handleSubmit} className="space-y-4" noValidate>
         <div>
           <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
             Name*
@@ -74,11 +95,13 @@ const Registration = () => {
             id="name"
             name="name"
             type="text"
+            aria-invalid={!!(formik.touched.name && formik.errors.name)}
             className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             onChange={formik.handleChange}
             onBlur={formik.handleBlur}
             value={formik.values.name}
             placeholder="Your full name"
+            autoComplete="name"
           />
           {formik.touched.name && formik.errors.name && (
             <div className="text-red-500 text-xs mt-1">{formik.errors.name}</div>
@@ -93,17 +116,18 @@ const Registration = () => {
             id="email"
             name="email"
             type="email"
+            aria-invalid={!!(formik.touched.email && formik.errors.email)}
             className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             onChange={formik.handleChange}
             onBlur={formik.handleBlur}
             value={formik.values.email}
             placeholder="Email address"
+            autoComplete="email"
           />
           {formik.touched.email && formik.errors.email && (
             <div className="text-red-500 text-xs mt-1">{formik.errors.email}</div>
           )}
         </div>
-
 
         <div>
           <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
@@ -113,17 +137,18 @@ const Registration = () => {
             id="password"
             name="password"
             type="password"
+            aria-invalid={!!(formik.touched.password && formik.errors.password)}
             className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             onChange={formik.handleChange}
             onBlur={formik.handleBlur}
             value={formik.values.password}
             placeholder="Create a password"
+            autoComplete="new-password"
           />
           {formik.touched.password && formik.errors.password && (
             <div className="text-red-500 text-xs mt-1">{formik.errors.password}</div>
           )}
         </div>
-
 
         <div>
           <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1">
@@ -133,25 +158,25 @@ const Registration = () => {
             id="confirmPassword"
             name="confirmPassword"
             type="password"
+            aria-invalid={!!(formik.touched.confirmPassword && formik.errors.confirmPassword)}
             className="w-full p-3 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             onChange={formik.handleChange}
             onBlur={formik.handleBlur}
             value={formik.values.confirmPassword}
             placeholder="Confirm your password"
+            autoComplete="new-password"
           />
           {formik.touched.confirmPassword && formik.errors.confirmPassword && (
             <div className="text-red-500 text-xs mt-1">{formik.errors.confirmPassword}</div>
           )}
         </div>
 
-
         {formik.status?.success && (
-          <div className="text-green-600 text-sm">{formik.status.success}</div>
+          <div className="text-green-600 text-sm" role="status">{formik.status.success}</div>
         )}
         {formik.status?.error && (
-          <div className="text-red-600 text-sm">{formik.status.error}</div>
+          <div className="text-red-600 text-sm" role="alert">{formik.status.error}</div>
         )}
-
 
         <button
           type="submit"
@@ -162,13 +187,13 @@ const Registration = () => {
         </button>
       </form>
 
-
       <div className="mt-8 text-center">
         <p className="text-gray-600">
           Already have an account?{" "}
           <button
             onClick={() => navigate("/login")}
             className="text-black font-medium hover:underline focus:outline-none"
+            type="button"
           >
             Login here
           </button>
