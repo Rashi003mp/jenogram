@@ -359,7 +359,7 @@ function Payment() {
         const created = createRes.data?.data ?? createRes.data;
         const orderId = created?.id ?? created?.orderId ?? null;
 
-        // clear cart immediately for COD (we keep existing behavior)
+        // clear cart immediately for COD
         try {
           await clearCart();
         } catch (e) {
@@ -367,14 +367,18 @@ function Payment() {
         }
 
         if (typeof setCartLength === "function") {
-          try { setCartLength(0); } catch (e) { console.warn("setCartLength failed", e); }
+          try {
+            setCartLength(0);
+          } catch (e) {
+            console.warn("setCartLength failed", e);
+          }
         }
 
         toast.success("Order placed successfully ✅");
         setIsProcessing(false);
-        // navigate to orders page or confirmation - you used order-list earlier
-        if (orderId) navigate("/order-confirmation", { state: { orderId } });
-        else navigate("/order-list", { replace: true });
+
+        // Navigate to order list without replace flag to preserve history
+        navigate("/order-list");
         return;
       }
     } catch (err) {
